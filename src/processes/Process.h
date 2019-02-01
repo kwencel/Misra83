@@ -46,9 +46,34 @@ public:
             }
         });
 
+        if (this->monitor->getProcessId() == 0) {
+            ping.isPresent = true;
+            pong.isPresent = true;
+            std::thread([&]{
+                while (true) {
+                    Logger::registerThread("Input");
+                    ProcessId process;
+                    char token;
+                    std::cin >> token >> process;
+                    if (process >= 0 and process < this->monitor->getNumberOfProcesses()) {
+                        if (token == 'q') {
+                            Logger::log(util::concat("P", process, " will omit the next PING"));
+                            this->monitor->send(MessageType::CRASH, "PING", process);
+                            continue;
+                        } else if (token == 'w') {
+                            Logger::log(util::concat("P", process, " will omit the next PONG"));
+                            this->monitor->send(MessageType::CRASH, "PONG", process);
+                            continue;
+                        }
+                    }
+                    Logger::log(util::concat("Unexpected input '", process, " ", token,"'", " - ignoring"));
+                }
+            }).detach();
+        }
+
         this->monitor->subscribe([](Packet p) { return p.messageType == MessageType::PING; }, [&](Packet p) {
             if (omitNextPing) {
-                Logger::log(util::concat("Omitted PONG from ", p.source));
+                Logger::log(util::concat("Omitted PING from P", p.source));
                 omitNextPing = false;
                 return;
             }
@@ -56,18 +81,32 @@ public:
                 Logger::log("An old ping has arrived - ignoring it", rang::fg::blue);
                 return;
             }
+            std::unique_lock<std::mutex> lock(csMutex);
             ping = { .value = std::stoi(p.message), .isPresent = true };
+            bool pongRegenerated = false;
             if (m == ping.value) {
                 // PONG got lost
                 regenerate(ping.value);
+                pongRegenerated = true;
+            }
+            if (ping.isPresent and pong.isPresent) {
+                // Both PING and PONG have met in the same process (possibly due to the regeneration)
+                incarnate(ping.value);
             }
             // Allow the main thread to enter critical section
             csCond.notify_one();
+            lock.unlock();
+
+            if (pongRegenerated) {
+                /* If pong was just regenerated, we also want to send it. We make sure it is never sent before PING
+                   if both tokens exists in the process */
+                sendPong();
+            }
         });
 
         this->monitor->subscribe([](Packet p) { return p.messageType == MessageType::PONG; }, [&](Packet p) {
             if (omitNextPong) {
-                Logger::log(util::concat("Omitted PONG from ", p.source), rang::fg::red);
+                Logger::log(util::concat("Omitted PONG from P", p.source), rang::fg::red);
                 omitNextPong = false;
                 return;
             }
@@ -79,19 +118,28 @@ public:
             if (m == pong.value) {
                 // PING got lost
                 regenerate(pong.value);
-            } else if (ping.isPresent and pong.isPresent) {
-                // Both PING and PONG have met in the same process
-                incarnate(ping.value);
             }
+            if (ping.isPresent and pong.isPresent) {
+                // Both PING and PONG have met in the same process (possibly due to the regeneration)
+                incarnate(ping.value);
+                csCond.notify_one();
+            }
+
+            /* We just received pong so we can surely send it. We make sure this operation is delayed until the PING
+               is sent if the process has it */
+            sendPong();
         });
     }
 
-    void run() {
-        if (monitor->getProcessId() == 0) {
-            ping.isPresent = true;
-            pong.isPresent = true;
-        }
+    void sendPong() {
+        std::unique_lock<std::mutex> lock(tokensMutex);
+//        Logger::log("Waiting for ping to clear to send the pong");
+        pongCond.wait(lock, [&]() { return not ping.isPresent; });
+//        Logger::log("Ping was sent, so I send pong");
+        send(MessageType::PONG, pong);
+    }
 
+    void run() {
         // Wait for entering critical section
         while (true) {
             std::unique_lock<std::mutex> csLock(csMutex);
@@ -106,10 +154,13 @@ public:
             std::lock_guard<std::mutex> guard(tokensMutex);
             sleep(1000, 2000);
             send(MessageType::PING, ping);
-            if (pong.isPresent) {
-                sleep(500, 1000);
+
+            // Only needed at the start to bootstrap the tokens in the ring
+            if (bootstrap && monitor->getProcessId() == 0) {
                 send(MessageType::PONG, pong);
+                bootstrap = false;
             }
+            pongCond.notify_one();
         }
     }
 
@@ -154,11 +205,13 @@ private:
     TokenVal m = 0; // last sent token value
     bool omitNextPing = false;
     bool omitNextPong = false;
+    bool bootstrap = true;
 
     /** Internal synchronization variables **/
     std::mutex csMutex;
     std::condition_variable csCond;
     std::mutex tokensMutex;
+    std::condition_variable pongCond;
 
     Random random;
 };
