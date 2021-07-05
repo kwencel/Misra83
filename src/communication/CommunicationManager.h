@@ -12,8 +12,8 @@
 #include "ICommunicator.h"
 
 using SubscriptionId = std::size_t;
-using SubscriptionPredicate = std::function<bool(Packet)>;
-using SubscriptionCallback = std::function<void(Packet)>;
+using SubscriptionPredicate = std::function<bool(const Packet&)>;
+using SubscriptionCallback = std::function<void(const Packet&)>;
 
 class CommunicationManager {
 public:
@@ -34,7 +34,7 @@ public:
         }
     }
 
-    SubscriptionId subscribe(SubscriptionPredicate predicate, SubscriptionCallback callback) {
+    SubscriptionId subscribe(const SubscriptionPredicate& predicate, const SubscriptionCallback& callback) {
         std::lock_guard<std::mutex> lock(subscriptionMutex);
         subscriptions[subscriptionSeqNo] = {predicate, callback};
         return subscriptionSeqNo++;
@@ -100,7 +100,7 @@ protected:
         }
     };
 
-    static const std::string printPacket(MessageType messageType, const std::string& message) {
+    static std::string printPacket(MessageType messageType, const std::string& message) {
         return util::concat("[messageType: ", messageType, ", message: ", message, ']');
     }
 

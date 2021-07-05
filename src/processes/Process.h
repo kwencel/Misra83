@@ -3,13 +3,12 @@
 #ifndef MISRA_PROCESS_H
 #define MISRA_PROCESS_H
 
-
-#include "AbstractProcess.h"
+#include <mutex>
+#include <condition_variable>
 #include <communication/ITaggedCommunicator.h>
 #include <communication/ICommunicator.h>
 #include <communication/CommunicationManager.h>
-#include <mutex>
-#include <condition_variable>
+#include <util/Random.h>
 
 using TokenVal = int;
 
@@ -17,7 +16,7 @@ struct Token {
     TokenVal value;
     bool isPresent;
 
-    const std::string toString() const noexcept {
+    [[nodiscard]] std::string toString() const noexcept {
         return util::concat("[", value, ", ", isPresent ? "yes" : "no ", "]");
     }
 };
@@ -36,7 +35,7 @@ public:
             return util::concat("(ping: ", ping.toString(), ", pong: ", pong.toString(),", m: ", m, ")[P", processId, "] ");
         });
 
-        this->monitor->subscribe([](Packet p) { return p.messageType == MessageType::CRASH; }, [&](Packet p) {
+        this->monitor->subscribe([](const Packet& p) { return p.messageType == MessageType::CRASH; }, [&](const Packet& p) {
             if (p.message == "PING") {
                 omitNextPing = true;
             } else if (p.message == "PONG") {
@@ -71,7 +70,7 @@ public:
             }).detach();
         }
 
-        this->monitor->subscribe([](Packet p) { return p.messageType == MessageType::PING; }, [&](Packet p) {
+        this->monitor->subscribe([](const Packet& p) { return p.messageType == MessageType::PING; }, [&](const Packet& p) {
             if (omitNextPing) {
                 Logger::log(util::concat("Omitted PING from P", p.source));
                 omitNextPing = false;
@@ -104,7 +103,7 @@ public:
             }
         });
 
-        this->monitor->subscribe([](Packet p) { return p.messageType == MessageType::PONG; }, [&](Packet p) {
+        this->monitor->subscribe([](const Packet& p) { return p.messageType == MessageType::PONG; }, [&](const Packet& p) {
             if (omitNextPong) {
                 Logger::log(util::concat("Omitted PONG from P", p.source), rang::fg::red);
                 omitNextPong = false;
